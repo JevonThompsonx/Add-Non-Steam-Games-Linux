@@ -1,0 +1,8 @@
+# Ensure consistent line endings
+* text=auto
+
+# Shell scripts must use LF on all platforms
+*.sh text eol=lf
+
+# Python files — let Git normalise
+*.py text eol=lf
