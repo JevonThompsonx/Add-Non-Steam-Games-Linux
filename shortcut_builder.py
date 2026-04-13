@@ -73,19 +73,43 @@ MANUAL_TITLE_ALIASES = {
     "lego the incredibles": ["LEGO The Incredibles"],
     "smt iii nocturne hd remaster": ["Shin Megami Tensei III: Nocturne - HD Remaster"],
     "ys viii lacrimosa of dana": ["Ys VIII: Lacrimosa of Dana"],
-    # Games on your system
+    # ── Games on this CachyOS system ─────────────────────────────────────────
+    "absolum": ["Absolum"],
+    # BALLxPIT — exe stem "Balls" weakly matches dir name; alias ensures correct title
+    "ballxpit": ["BALLxPIT"],
+    "celeste": ["Celeste"],
     "chrono trigger steamrip com": ["Chrono Trigger"],
     "chrono trigger steamrip": ["Chrono Trigger"],
+    "chrono trigger": ["Chrono Trigger"],
+    "constance": ["Constance"],
     "cross blitz early access": ["Cross Blitz"],
+    "cross blitz": ["Cross Blitz"],
+    "cuphead": ["Cuphead"],
     "disco elysium": ["Disco Elysium"],
     "dragon quest i ii steamgg net": ["Dragon Quest I & II"],
     "dragon quest i ii": ["Dragon Quest I & II"],
     "dragon quest iii hd 2d remake": ["Dragon Quest III HD-2D Remake"],
     "etrian odyssey origins collection": ["Etrian Odyssey Origins Collection"],
+    # Final Fantasy Pixel Remaster — folder names use the "PR" abbreviation
+    "final fantasy i pr": ["Final Fantasy I Pixel Remaster"],
+    "final fantasy ii pr": ["Final Fantasy II Pixel Remaster"],
+    "final fantasy iii pr": ["Final Fantasy III Pixel Remaster"],
+    "final fantasy iv pr": ["Final Fantasy IV Pixel Remaster"],
+    "final fantasy v pr": ["Final Fantasy V Pixel Remaster"],
+    "final fantasy vi pr": ["Final Fantasy VI Pixel Remaster"],
+    "furi": ["Furi"],
     "hollow knight silksong": ["Hollow Knight: Silksong"],
     "monster hunter stories": ["Monster Hunter Stories"],
     "neon abyss 2": ["Neon Abyss 2"],
+    # Possessor(s) — parentheses survive clean_game_name; alias restores them
+    "possessor s": ["Possessor(s)"],
+    "possessor": ["Possessor(s)"],
     "risk of rain 2": ["Risk of Rain 2"],
+    "shape of dreams": ["Shape of Dreams"],
+    # Suikoden — folder name uses "&", exe stem uses "and"
+    "suikoden i and ii hd remaster": ["Suikoden I & II HD Remaster"],
+    "suikoden i ii hd remaster": ["Suikoden I & II HD Remaster"],
+    # Ys I / II — GOG releases; long subtitles from the alias
     "ys i": ["Ys I: Ancient Ys Vanished"],
     "ys ii": ["Ys II: Ancient Ys Vanished – The Final Chapter"],
 }
@@ -123,14 +147,23 @@ def _smart_title(value: str) -> str:
 
 
 def normalize_posix_path(path: str) -> str:
-    """Normalize a POSIX path (no Windows backslash conversion)."""
+    """Normalize a POSIX path string without ever converting forward slashes.
+
+    ``pathlib.Path`` converts ``/`` to ``\\`` on Windows, which is wrong here
+    because this code always produces Linux paths (even when tested on Windows).
+    We therefore do all normalization at the string level.
+    """
     value = str(path or "").strip().strip('"').strip()
     if not value:
         return ""
-    # Expand home directory
-    if value.startswith("~"):
-        value = str(Path(value).expanduser())
-    return str(Path(value))
+    # Expand ~ at the string level so we avoid Path() slash conversion
+    if value.startswith("~/") or value == "~":
+        home = Path.home().as_posix()
+        value = home + value[1:]
+    # Collapse double slashes but do NOT call Path() — keep forward slashes
+    while "//" in value:
+        value = value.replace("//", "/")
+    return value
 
 
 def quote_posix_path(path: str, trailing_slash: bool = False) -> str:
@@ -181,6 +214,10 @@ def get_unsigned_id(signed_appid: int) -> int:
 
 def clean_game_name(folder_name: str) -> str:
     name = folder_name.strip()
+    # Strip distribution-site suffixes BEFORE camelCase splitting so patterns
+    # like "SteamRIP.com" and "SteamGG.NET" are removed while still contiguous.
+    name = re.sub(r"[-_. ]*steamrip(?:\.com)?", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"[-_. ]*steamgg(?:\.net)?", "", name, flags=re.IGNORECASE)
     name = re.sub(r"(?<=[a-z])(?=[A-Z]{2,}\b)", " ", name)
     for pattern in RELEASE_TAG_PATTERNS:
         name = re.sub(pattern, "", name, flags=re.IGNORECASE)
@@ -323,9 +360,15 @@ def normalize_tags(tags: object) -> dict[str, str]:
 
 def build_shortcut(app_name: str, exe_path: str, icon_path: str = "", launch_options: str = "") -> dict:
     normalized_exe = normalize_posix_path(exe_path)
-    start_dir = Path(normalized_exe).parent if normalized_exe else Path(".")
+    # Derive parent directory via string split to avoid Path() converting / to \ on Windows
+    if normalized_exe and "/" in normalized_exe:
+        start_dir_str = normalized_exe.rsplit("/", 1)[0] + "/"
+    elif normalized_exe:
+        start_dir_str = "./"
+    else:
+        start_dir_str = "./"
     quoted_exe = quote_posix_path(normalized_exe)
-    quoted_start_dir = quote_posix_path(str(start_dir), trailing_slash=True)
+    quoted_start_dir = f'"{start_dir_str}"' if start_dir_str else ""
     final_name = clean_game_name(app_name) if app_name else derive_app_name_from_path(normalized_exe)
     appid = generate_shortcut_id(quoted_exe, final_name)
 

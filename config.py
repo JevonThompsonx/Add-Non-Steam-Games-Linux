@@ -132,6 +132,7 @@ SKIP_DIRS = {
     ".github",
     "node_modules",
     "__pycache__",
+    "add-non-steam-games-linux",   # skip this tool's own directory if inside ~/Games
 }
 
 # Executable stems/names to skip (Linux: no .exe, just stem)
@@ -151,6 +152,7 @@ SKIP_EXE_STEMS = {
     "patcher",
     "update",
     "configure",
+    "config",        # catches config.exe (e.g. Ys I/II GOG releases)
     "python",
     "python3",
     "bash",
@@ -224,6 +226,7 @@ GAME_HINT_FILES = {
     "libsteam_api.so",
     "steam_api.so",
     "UnityPlayer.so",
+    "UnityPlayer.dll",   # Windows Unity games running via Proton
     "libunity.so",
     "game.pck",    # Godot games
     "data.pck",    # Godot games

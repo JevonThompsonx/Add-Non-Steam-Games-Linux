@@ -35,17 +35,20 @@ class DiscoveredGame:
 
 
 def _is_executable_file(path: Path) -> bool:
-    """Return True if the file is an executable (native binary or script)."""
+    """Return True if the file is an executable (native binary, script, or Windows .exe).
+
+    Windows .exe files copied onto a Linux filesystem rarely have execute bits set
+    because chmod is never applied during extraction.  They are accepted
+    unconditionally (after name-based filtering) without requiring execute bits.
+    All native Linux formats (.sh, bare binaries, .elf/.bin/.run) still require at
+    least one executable bit as a meaningful sanity check.
+    """
     try:
         file_stat = path.stat()
     except OSError:
         return False
 
-    # Must have at least one executable bit set
-    if not (file_stat.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)):
-        return False
-
-    # Skip if it's a directory
+    # Skip directories
     if stat.S_ISDIR(file_stat.st_mode):
         return False
 
@@ -56,16 +59,25 @@ def _is_executable_file(path: Path) -> bool:
     name_lower = path.name.lower()
     stem_lower = path.stem.lower()
 
-    # Skip common non-game executables by name
+    # Skip common non-game executables by name (applies to all types)
     if stem_lower in SKIP_EXE_STEMS:
         return False
 
-    # Skip by glob patterns
+    # Skip by glob patterns (applies to all types)
     if any(fnmatch.fnmatch(name_lower, pattern) for pattern in SKIP_EXE_PATTERNS):
         return False
 
-    # Skip system utilities (typically single words, no extension, in /usr)
+    # Skip system paths
     if str(path).startswith("/usr/") or str(path).startswith("/bin/") or str(path).startswith("/sbin/"):
+        return False
+
+    # Windows PE binaries: no execute-bit requirement — run via Proton/Wine.
+    # This MUST come before the execute-bit check below.
+    if name_lower.endswith(".exe"):
+        return True
+
+    # For all native Linux formats require at least one executable bit
+    if not (file_stat.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)):
         return False
 
     # Accept .sh scripts (many Linux game launchers are shell scripts)
@@ -78,10 +90,6 @@ def _is_executable_file(path: Path) -> bool:
 
     # Accept common Linux game binary extensions
     if any(name_lower.endswith(ext) for ext in (".elf", ".bin", ".run")):
-        return True
-
-    # Accept Wine/Proton .exe wrappers that exist on the filesystem
-    if name_lower.endswith(".exe"):
         return True
 
     return False
@@ -175,7 +183,7 @@ def _candidate_score(game_dir: Path, exe_path: Path) -> float:
 def _derive_display_name(game_dir: Path, exe_path: Path) -> str:
     exe_name = prettify_exe_stem(exe_path.stem)
     if exe_name.strip().lower() not in SKIP_CANDIDATE_APP_NAMES and len(exe_name.strip()) >= 6:
-        if similarity_score(clean_game_name(game_dir.name), exe_name) >= 0.6:
+        if similarity_score(clean_game_name(game_dir.name), exe_name) >= 0.65:
             return exe_name
 
     for parent in [exe_path.parent, *exe_path.parents[1:]]:

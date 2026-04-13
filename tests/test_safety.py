@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import logging
+import platform
 import stat
 import tempfile
 import unittest
@@ -201,6 +202,7 @@ class GameScannerTests(unittest.TestCase):
 
             self.assertEqual(results, [])
 
+    @unittest.skipIf(platform.system() == "Windows", "execute bits not honoured on Windows")
     def test_discover_games_finds_executable_binary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -225,12 +227,37 @@ class GameScannerTests(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].exe_path, exe)
 
+    def test_discover_games_finds_exe_without_execute_bits(self) -> None:
+        """Windows .exe files on Linux typically lack execute bits — must still be found."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            game_dir = root / "Cuphead"
+            game_dir.mkdir(parents=True)
+            exe = game_dir / "Cuphead.exe"
+            exe.write_bytes(b"MZ" + b"\x00" * 60)  # PE magic, no execute bits
+
+            original_known_dirs = game_scanner.KNOWN_GAME_DIRS
+            try:
+                game_scanner.KNOWN_GAME_DIRS = [root]
+                results = discover_games(
+                    existing_exe_paths=set(),
+                    steam_common_dirs=[],
+                    logger=logging.getLogger("test"),
+                    existing_app_names=set(),
+                )
+            finally:
+                game_scanner.KNOWN_GAME_DIRS = original_known_dirs
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].exe_path, exe)
+
     def test_discover_games_skips_non_executable_files(self) -> None:
+        """Native binaries (no extension) without execute bits must NOT be detected."""
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             game_dir = root / "SomeGame"
             game_dir.mkdir(parents=True)
-            # Write a file without executable bits
+            # Write a file without executable bits and no .exe extension
             not_exe = game_dir / "somegame"
             not_exe.write_bytes(b"\x7fELF" + b"\x00" * 60)
             # Do NOT call _make_executable — no execute bits
