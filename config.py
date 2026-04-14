@@ -72,6 +72,7 @@ FLATPAK_STEAM_PATH = Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / 
 # Known game directories on this CachyOS system
 HOME = Path.home()
 KNOWN_GAME_DIRS = [
+    Path("/home/jevonx/Games"),
     HOME / "Games",
     HOME / ".local" / "share" / "lutris" / "games",
     HOME / "snap" / "steam" / "common" / ".local" / "share" / "Steam" / "steamapps" / "common",
