@@ -179,12 +179,6 @@ def unquote_posix_path(path: str) -> str:
     return normalize_posix_path(path)
 
 
-# Keep Windows-named aliases so shared code continues to work
-normalize_windows_path = normalize_posix_path
-quote_windows_path = quote_posix_path
-unquote_windows_path = unquote_posix_path
-
-
 def has_glob_pattern(path: str) -> bool:
     value = str(path or "")
     return any(token in value for token in ("*", "?", "[", "]", "(", ")", "|"))

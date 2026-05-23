@@ -8,7 +8,7 @@ import importlib.util
 from pathlib import Path
 
 from artwork_manager import SteamGridDBClient, cleanup_downloaded_artwork, download_artwork_for_shortcuts, resolve_api_key
-from config import LOG_FILE_NAME, MIN_PYTHON
+from config import LOG_FILE_NAME, MIN_PYTHON, get_env_value
 from fixer import diagnose_shortcuts, fix_shortcuts_interactively
 from game_scanner import DiscoveredGame, discover_games
 from logger_setup import setup_logging
@@ -475,19 +475,25 @@ def select_games_to_add(candidates: list[DiscoveredGame]) -> list[DiscoveredGame
         return []
 
     selected = [not candidate.ambiguous for candidate in candidates]
-    while True:
+
+    def render_menu() -> None:
         print(f"\nFound {len(candidates)} games to add:\n")
         for index, candidate in enumerate(candidates, start=1):
             mark = "x" if selected[index - 1] else " "
             suffix = " [needs review]" if candidate.ambiguous else ""
             print(f" [{mark}] {index:2d}. {candidate.app_name:<30} -> {candidate.exe_path}{suffix}")
         print("\nCommands: [a] Select all  [n] Select none  [1-#] Toggle  [c] Confirm  [q] Quit")
+
+    render_menu()
+    while True:
         response = input("Choose: ").strip().lower()
         if response == "a":
             selected = [True] * len(candidates)
+            render_menu()
             continue
         if response == "n":
             selected = [False] * len(candidates)
+            render_menu()
             continue
         if response == "c":
             break
@@ -496,13 +502,19 @@ def select_games_to_add(candidates: list[DiscoveredGame]) -> list[DiscoveredGame
 
         tokens = [token for token in response.replace(",", " ").split() if token]
         toggled = False
+        toggled_names: list[str] = []
         for token in tokens:
             if token.isdigit() and 1 <= int(token) <= len(candidates):
                 idx = int(token) - 1
                 selected[idx] = not selected[idx]
+                state = "selected" if selected[idx] else "deselected"
+                toggled_names.append(f"{candidates[idx].app_name} {state}")
                 toggled = True
         if not toggled:
             print("Please enter one of the listed commands.")
+        elif len(toggled_names) <= 3:
+            print("  " + ", ".join(toggled_names))
+            render_menu()
 
     confirmed: list[DiscoveredGame] = []
     for is_selected, candidate in zip(selected, candidates):
@@ -664,10 +676,15 @@ def full_run(steam_path: Path, selected_users: list[SteamUser], logger) -> None:
         per_user_shortcuts[user.user_id] = reindex_shortcuts(combined)
         total_added += added_here
 
-    if not chosen_games:
-        print("No new games selected during full run.")
+    if not chosen_games and not total_fixed and not total_removed:
+        print("No changes needed. Skipping artwork download.")
+        return
 
-    api_key = resolve_api_key(prompt_if_missing=True)
+    if chosen_games:
+        api_key = resolve_api_key(prompt_if_missing=True)
+    else:
+        api_key = resolve_api_key(prompt_if_missing=False)
+
     total_art = 0
     for user in selected_users:
         shortcuts_map = per_user_shortcuts[user.user_id]
@@ -691,11 +708,35 @@ def full_run(steam_path: Path, selected_users: list[SteamUser], logger) -> None:
     )
     print("Start Steam to see your changes.")
 
+def check_env_setup(logger) -> None:
+    """Check if .env file exists and has STEAMGRIDDB_API_KEY configured."""
+    env_path = Path(__file__).resolve().parent / ".env"
+    env_example_path = env_path.parent / ".env.example"
+
+    if not env_path.exists():
+        if env_example_path.exists():
+            print("No .env file found. Copy .env.example to .env and add your STEAMGRIDDB_API_KEY.")
+            print(f"  cp {env_example_path} {env_path} && $EDITOR {env_path}")
+        else:
+            print("No .env or .env.example found. Create .env with STEAMGRIDDB_API_KEY=your_key")
+        logger.info("No .env file found; API key must be entered manually or set as env var")
+        return
+
+    api_key = get_env_value("STEAMGRIDDB_API_KEY")
+    if api_key:
+        logger.info(".env file found with STEAMGRIDDB_API_KEY configured")
+    else:
+        logger.info(".env file exists but STEAMGRIDDB_API_KEY not configured or empty")
+        print("Tip: Add your SteamGridDB API key to .env:")
+        print(f"  echo 'STEAMGRIDDB_API_KEY=your_key_here' >> {env_path}")
+
 
 def main() -> int:
     check_python_version()
     check_dependencies()
     logger = setup_logging(LOG_FILE_NAME)
+
+    check_env_setup(logger)
 
     if "--diagnose" in sys.argv[1:]:
         return run_diagnostics(logger)

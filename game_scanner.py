@@ -7,22 +7,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from config import (
+    ENGINE_DATA_FILE_STEMS,
     GENERIC_CONTAINER_DIRS,
-    GAME_HINT_FILES,
+    GAME_HINT_FILES_LOWER,
     GAME_HINT_PREFIXES,
     KNOWN_GAME_DIRS,
     MAX_EXECUTABLE_SCAN_DEPTH,
     MAX_SCAN_DEPTH,
+    OVERLAY_DIR_NAMES,
     SKIP_CANDIDATE_APP_NAMES,
     SKIP_DIRS,
     SKIP_EXE_PATTERNS,
     SKIP_EXE_STEMS,
     SKIP_PATH_KEYWORDS,
     SYSTEM_SKIP_DIRS,
+    WINE_SYSTEM_EXE_STEMS,
 )
 from shortcut_builder import clean_game_name, normalize_lookup_text, normalized_exe_identity, prettify_exe_stem, similarity_score
 from steam_paths import path_is_in_steam_library
 
+MAX_EXTENDED_SCAN_DEPTH = 8
 
 @dataclass(slots=True)
 class DiscoveredGame:
@@ -32,6 +36,97 @@ class DiscoveredGame:
     score: float
     ambiguous: bool = False
     candidates: list[Path] = field(default_factory=list)
+
+
+
+def _path_is_in_wine_prefix(path: Path) -> bool:
+    """Return True if path is inside a Wine/Proton prefix system directory."""
+    lowered = str(path).lower()
+    # Wine prefixes have drive_c/ structure (Linux-only tool, forward slashes)
+    if "/drive_c/" not in lowered:
+        return False
+    # Check for Windows system directories inside the Wine prefix
+    wine_system_patterns = (
+        "/windows/system32/",
+        "/windows/syswow64/",
+        "/windows/system/",
+        "/windows/command/",
+        "/windows/winhelp.exe",
+        "/program files (x86)/internet explorer/",
+        "/program files (x86)/windows media player/",
+        "/program files/internet explorer/",
+        "/program files/windows media player/",
+        "/windows/winsxs/",
+        "/windows/microsoft.net/",
+    )
+    for pattern in wine_system_patterns:
+        if pattern in lowered:
+            return True
+    return False
+
+
+def _path_is_in_overlay_dir(path: Path) -> bool:
+    """Return True if path is inside an overlay/trainer/injector directory."""
+    for part in path.parts:
+        if part.lower() in OVERLAY_DIR_NAMES:
+            return True
+    return False
+
+
+def _path_is_in_steam_downloading(path: Path) -> bool:
+    """Return True if path is inside a Steam library downloading directory."""
+    return "/steamapps/downloading/" in str(path).lower()
+
+
+def _path_is_engine_data(path: Path) -> bool:
+    """Return True if path looks like game engine data, not a game executable.
+
+    Engine data files are typically .bin files inside Engine/Content/ paths,
+    or extensionless files with known engine data names.
+    """
+    lowered = str(path).lower()
+    # .bin files inside Engine/Content/ or Engine/Binaries/ are shader caches / engine data
+    if path.suffix.lower() == ".bin":
+        for engine_pattern in ("/engine/content/", "/engine/binaries/", "/engine/plugins/"):
+            if engine_pattern in lowered:
+                return True
+    # Check known engine data file stems (extensionless false positives)
+    if path.stem.lower() in ENGINE_DATA_FILE_STEMS:
+        return True
+    # Unity level data files: "level" + digits (e.g. level0, level46, level220)
+    stem = path.stem.lower()
+    if stem.startswith("level") and stem[5:].isdigit() and len(stem) > 5:
+        return True
+    return False
+
+
+def _is_game_executable(path: Path) -> bool:
+    """High-level check: is this file a game executable worth scanning?
+
+    Combines all skip checks: system exes, Wine prefix, overlay dirs,
+    Steam downloading, engine data files, and the basic executable check.
+    """
+    if not _is_executable_file(path):
+        return False
+    # Skip Windows system tools
+    if path.stem.lower() in WINE_SYSTEM_EXE_STEMS:
+        return False
+    # Skip Wine prefix system executables
+    if _path_is_in_wine_prefix(path):
+        return False
+    # Skip overlay/injector executables
+    if _path_is_in_overlay_dir(path):
+        return False
+    # Skip Steam downloading executables
+    if _path_is_in_steam_downloading(path):
+        return False
+    # Skip engine data files
+    if _path_is_engine_data(path):
+        return False
+    # Skip paths with known non-game keywords
+    if _path_contains_skip_keyword(path):
+        return False
+    return True
 
 
 def _is_executable_file(path: Path) -> bool:
@@ -68,7 +163,8 @@ def _is_executable_file(path: Path) -> bool:
         return False
 
     # Skip system paths
-    if str(path).startswith("/usr/") or str(path).startswith("/bin/") or str(path).startswith("/sbin/"):
+    path_lower = str(path).lower()
+    if path_lower.startswith("/usr/") or path_lower.startswith("/bin/") or path_lower.startswith("/sbin/"):
         return False
 
     # Windows PE binaries: no execute-bit requirement — run via Proton/Wine.
@@ -97,6 +193,7 @@ def _is_executable_file(path: Path) -> bool:
 
 def _is_skip_dir(directory_name: str) -> bool:
     lowered = directory_name.lower()
+    # .startswith(".") catches any hidden directory (.config, .cache, etc.)
     return lowered in SKIP_DIRS or lowered in SYSTEM_SKIP_DIRS or lowered.startswith(".")
 
 
@@ -107,7 +204,7 @@ def _path_contains_skip_keyword(path: Path) -> bool:
 
 def _has_game_hints(files: list[str]) -> bool:
     lowered = {file_name.lower() for file_name in files}
-    if lowered.intersection({h.lower() for h in GAME_HINT_FILES}):
+    if lowered.intersection(GAME_HINT_FILES_LOWER):
         return True
     return any(file_name.lower().startswith(GAME_HINT_PREFIXES) for file_name in files)
 
@@ -132,9 +229,11 @@ def _iter_candidate_directories(scan_root: Path, max_depth: int) -> list[Path]:
 
         dir_names[:] = [name for name in dir_names if not _is_skip_dir(name)]
         if current_depth >= max_depth:
+            dir_names[:] = [name for name in dir_names if name.lower() in GENERIC_CONTAINER_DIRS]
+        if current_depth >= MAX_EXTENDED_SCAN_DEPTH:
             dir_names[:] = []
 
-        exe_files = [name for name in file_names if _is_executable_file(current_path / name)]
+        exe_files = [name for name in file_names if _is_game_executable(current_path / name)]
         if exe_files or _has_game_hints(file_names):
             candidates.append(current_path)
     return candidates
@@ -232,7 +331,7 @@ def _select_best_executable(game_dir: Path, steam_common_dirs: list[Path]) -> tu
         dir_names[:] = [name for name in dir_names if not _is_skip_dir(name)]
         for file_name in file_names:
             candidate_path = current_path / file_name
-            if not _is_executable_file(candidate_path):
+            if not _is_game_executable(candidate_path):
                 continue
             if path_is_in_steam_library(candidate_path, steam_common_dirs):
                 continue

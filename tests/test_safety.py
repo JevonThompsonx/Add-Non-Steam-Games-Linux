@@ -15,7 +15,7 @@ from artwork_manager import ARTWORK_DOWNLOAD_HEADERS, SteamGridDBClient, cleanup
 from config import ARTWORK_REQUESTS
 from config import _parse_scan_dirs
 from fixer import diagnose_shortcuts
-from game_scanner import discover_games
+from game_scanner import discover_games, _is_game_executable
 from main import list_shortcuts
 from shortcut_builder import build_shortcut, clean_game_name, get_unsigned_id, is_concrete_exe_path, normalize_posix_path
 from steam_paths import SteamUser, list_steam_users
@@ -403,6 +403,197 @@ class ShortcutBuilderNoiseTests(unittest.TestCase):
     def test_darksiders_title_not_stripped_by_noise_patterns(self) -> None:
         result = clean_game_name("Darksiders 2")
         self.assertIn("darksiders", result.lower())
+
+
+# ---------------------------------------------------------------------------
+# False flag detection tests (Wine/overlay/engine/steam-downloading)
+# ---------------------------------------------------------------------------
+
+class FalseFlagDetectionTests(unittest.TestCase):
+    def test_wine_system_tool_stems_are_filtered(self) -> None:
+        """Windows system tools like iexplore.exe must not be discovered as games."""
+        stems = {"iexplore", "wmplayer", "winebrowser", "systeminfo", "notepad", "cmd", "explorer"}
+        for stem in stems:
+            with self.subTest(stem=stem):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    exe = Path(temp_dir) / f"{stem}.exe"
+                    exe.write_bytes(b"MZ" + b"\x00" * 60)
+                    self.assertFalse(_is_game_executable(exe), f"{stem}.exe should be filtered")
+
+    def test_wine_prefix_system_paths_are_filtered(self) -> None:
+        """Executables in Wine prefix system dirs must not be discovered."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            wine_scenarios = [
+                root / "Split Fiction" / "drive_c" / "windows" / "system32" / "iexplore.exe",
+                root / "Game" / "drive_c" / "windows" / "syswow64" / "systeminfo.exe",
+                root / "Game" / "drive_c" / "Program Files (x86)" / "Internet Explorer" / "iexplore.exe",
+                root / "Game" / "drive_c" / "Program Files (x86)" / "Windows Media Player" / "wmplayer.exe",
+                root / "Game" / "drive_c" / "windows" / "system32" / "winebrowser.exe",
+            ]
+            for exe in wine_scenarios:
+                with self.subTest(path=str(exe)):
+                    exe.parent.mkdir(parents=True, exist_ok=True)
+                    exe.write_bytes(b"MZ" + b"\x00" * 60)
+                    self.assertFalse(_is_game_executable(exe), f"{exe} should be filtered by Wine prefix check")
+
+    def test_overlay_dir_stems_are_filtered(self) -> None:
+        """Executables in __overlay directories must not be discovered."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            overlay_scenarios = [
+                root / "Game" / "__overlay" / "overlayinjector.exe",
+                root / "Game" / "_overlay" / "hooks.dll",
+                root / "Game" / "trainer" / "cheat.exe",
+            ]
+            for exe in overlay_scenarios:
+                with self.subTest(path=str(exe)):
+                    exe.parent.mkdir(parents=True, exist_ok=True)
+                    exe.write_bytes(b"MZ" + b"\x00" * 60)
+                    self.assertFalse(_is_game_executable(exe), f"{exe} should be filtered by overlay check")
+
+    def test_steam_downloading_paths_are_filtered(self) -> None:
+        """Executables in steamapps/downloading/ must not be discovered."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dl_dir = Path(temp_dir) / "steamapps" / "downloading" / "2228030"
+            dl_dir.mkdir(parents=True)
+            exe = dl_dir / "game.exe"
+            exe.write_bytes(b"MZ" + b"\x00" * 60)
+            self.assertFalse(_is_game_executable(exe), "Steam downloading exe should be filtered")
+
+    def test_engine_data_bin_files_are_filtered(self) -> None:
+        """.bin files in Engine/Content/ paths must not be discovered."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            engine_scenarios = [
+                root / "Rune Factory" / "Engine" / "Content" / "Renderer" / "TessellationTable.bin",
+                root / "Game" / "Engine" / "Binaries" / "ShaderCache.bin",
+                root / "Game" / "Engine" / "Plugins" / "PluginData.bin",
+            ]
+            for exe in engine_scenarios:
+                with self.subTest(path=str(exe)):
+                    exe.parent.mkdir(parents=True, exist_ok=True)
+                    exe.write_bytes(b"\x00" * 100)
+                    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+                    self.assertFalse(_is_game_executable(exe), f"{exe} should be filtered by engine data check")
+
+    def test_engine_data_file_stems_are_filtered(self) -> None:
+        """Extensionless files with known engine data names must not be discovered."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_file = Path(temp_dir) / "unity default resources"
+            data_file.write_bytes(b"\x00" * 100)
+            data_file.chmod(data_file.stat().st_mode | stat.S_IXUSR)
+            self.assertFalse(
+                _is_game_executable(data_file),
+                f"Engine data file '{data_file.name}' should be filtered"
+            )
+
+    def test_real_game_exe_not_filtered(self) -> None:
+        """Actual game executables must still be discovered correctly."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Normal game .exe in regular path
+            game_exe = Path(temp_dir) / "Card-en-Ciel.exe"
+            game_exe.write_bytes(b"MZ" + b"\x00" * 60)
+            self.assertTrue(
+                _is_game_executable(game_exe),
+                f"Real game exe '{game_exe.name}' should be discovered"
+            )
+
+    def test_linux_native_game_binary_not_filtered(self) -> None:
+        """Linux native game binaries (no extension, execute bits) must still be found."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            native_exe = Path(temp_dir) / "hollow_knight"
+            native_exe.write_bytes(b"\x7fELF" + b"\x00" * 60)
+            native_exe.chmod(native_exe.stat().st_mode | stat.S_IXUSR)
+            self.assertTrue(
+                _is_game_executable(native_exe),
+                f"Linux native binary '{native_exe.name}' should be discovered"
+            )
+
+    def test_game_sh_script_not_filtered(self) -> None:
+        """Game shell scripts must still be discovered."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sh_exe = Path(temp_dir) / "start_game.sh"
+            sh_exe.write_bytes(b"#!/bin/bash\necho start")
+            sh_exe.chmod(sh_exe.stat().st_mode | stat.S_IXUSR)
+            self.assertTrue(
+                _is_game_executable(sh_exe),
+                f"Shell script '{sh_exe.name}' should be discovered"
+            )
+
+    def test_wine_prefix_regular_game_inside_not_filtered(self) -> None:
+        """A real game exe inside a Wine prefix (but not in system dirs) must be found."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Real game in Wine prefix but NOT in system dirs
+            prefix_dir = Path(temp_dir) / "drive_c" / "Program Files" / "Split Fiction"
+            prefix_dir.mkdir(parents=True)
+            game_exe = prefix_dir / "SplitFiction.exe"
+            game_exe.write_bytes(b"MZ" + b"\x00" * 60)
+            self.assertTrue(
+                _is_game_executable(game_exe),
+                "Real game exe in Wine prefix (non-system dir) should be discovered"
+            )
+
+    def test_discover_games_excludes_wine_system_exes(self) -> None:
+        """Full discover_games pipeline must exclude Wine system executables."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            # Create a real game
+            game_dir = root / "Hollow Knight"
+            game_dir.mkdir(parents=True)
+            real_exe = game_dir / "hollow_knight"
+            real_exe.write_bytes(b"\x7fELF" + b"\x00" * 60)
+            real_exe.chmod(real_exe.stat().st_mode | stat.S_IXUSR)
+
+            # Create a Wine prefix with system exe
+            wine_dir = root / "Split Fiction" / "drive_c" / "windows" / "system32"
+            wine_dir.mkdir(parents=True)
+            bad_exe = wine_dir / "iexplore.exe"
+            bad_exe.write_bytes(b"MZ" + b"\x00" * 60)
+
+            # Create an overlay dir
+            overlay_dir = root / "It Takes Two" / "__overlay"
+            overlay_dir.mkdir(parents=True)
+            overlay_exe = overlay_dir / "overlayinjector.exe"
+            overlay_exe.write_bytes(b"MZ" + b"\x00" * 60)
+
+            original_known_dirs = game_scanner.KNOWN_GAME_DIRS
+            try:
+                game_scanner.KNOWN_GAME_DIRS = [root]
+                results = discover_games(
+                    existing_exe_paths=set(),
+                    steam_common_dirs=[],
+                    logger=logging.getLogger("test"),
+                    existing_app_names=set(),
+                )
+            finally:
+                game_scanner.KNOWN_GAME_DIRS = original_known_dirs
+
+            # Should only find Hollow Knight, not iexplore or overlayinjector
+            self.assertEqual(len(results), 1, "Should find exactly 1 game (Hollow Knight)")
+            self.assertIn("hollow", results[0].app_name.lower())
+
+
+# ---------------------------------------------------------------------------
+# .env setup check tests
+# ---------------------------------------------------------------------------
+
+class EnvSetupTests(unittest.TestCase):
+    def test_env_check_missing_file_shows_helpful_message(self) -> None:
+        """When no .env file exists, check_env_setup should print a helpful message."""
+        import logging
+        from main import check_env_setup
+
+        import io
+        from contextlib import redirect_stdout
+        output = io.StringIO()
+        with redirect_stdout(output):
+            check_env_setup(logging.getLogger("test"))
+
+        # Should reference .env.example since it exists in the project dir
+        result = output.getvalue()
+        self.assertTrue(".env" in result or "Copy" in result or "Tip" in result, f"Unexpected output: {result}")
 
 
 if __name__ == "__main__":

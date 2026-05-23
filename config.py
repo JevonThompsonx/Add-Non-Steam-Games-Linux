@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-from functools import lru_cache
 import os
 import re
+import stat as _stat
 from pathlib import Path
 
 
-@lru_cache(maxsize=1)
 def load_local_env() -> dict[str, str]:
     env_path = Path(__file__).resolve().with_name(".env")
     if not env_path.exists():
         return {}
+
+    if env_path.stat().st_mode & _stat.S_IROTH:
+        raise PermissionError(f"{env_path} is world-readable; chmod 600 to protect API key")
 
     values: dict[str, str] = {}
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
@@ -72,7 +74,6 @@ FLATPAK_STEAM_PATH = Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / 
 # Known game directories on this CachyOS system
 HOME = Path.home()
 KNOWN_GAME_DIRS = [
-    Path("/home/jevonx/Games"),
     HOME / "Games",
     HOME / ".local" / "share" / "lutris" / "games",
     HOME / "snap" / "steam" / "common" / ".local" / "share" / "Steam" / "steamapps" / "common",
@@ -161,6 +162,94 @@ SKIP_EXE_STEMS = {
     "zsh",
     "fish",
 }
+# Windows/Wine system executables inside Proton/Wine prefixes (never games)
+WINE_SYSTEM_EXE_STEMS = {
+    "iexplore",
+    "wmplayer",
+    "winebrowser",
+    "winhelp",
+    "start",          # start.exe in Wine command dir
+    "notepad",
+    "write",
+    "mspaint",
+    "calc",
+    "cmd",
+    "powershell",
+    "powershell_ise",
+    "regedit",
+    "regedt32",
+    "taskmgr",
+    "control",
+    "explorer",
+    "systeminfo",
+    "winver",
+    "dxdiag",
+    "msconfig",
+    "msinfo32",
+    "osk",
+    "snippingtool",
+    "magnify",
+    "narrator",
+    "stikynot",
+    "utilman",
+    "msiexec",
+    "rundll32",
+    "dllhost",
+    "conhost",
+    "svchost",
+    "lsass",
+    "services",
+    "spoolsv",
+    "ctfmon",
+    "sihost",
+    "taskhostw",
+    "runtimebroker",
+    "fontdrvhost",
+    "smss",
+    "csrss",
+    "wininit",
+    "winlogon",
+    "logonui",
+    "werfault",
+    "winhlp32",
+    "rundll",
+    "rundll32",
+    "msbuild",
+    "hh",
+}
+
+# Overlay/injector/trainer directory names (inside game dirs, not the game itself)
+OVERLAY_DIR_NAMES = {
+    "__overlay",
+    "_overlay",
+    "overlay",
+    "trainer",
+    "cheat",
+    "hooks",
+    "injector",
+    "crack",
+    "emu",
+    "goldberg",
+    "steamemu",
+    "creamapi",
+}
+
+# Engine data file stems (false positives: extensionless data files in game engines)
+ENGINE_DATA_FILE_STEMS = {
+    "unity default resources",
+    "unity_builtin_extra",
+    "globalgamemanagers",
+    "globalgamemanagers.assets",
+    "resources",
+    "sharedassets",
+    "boot.config",
+    "maindata",
+    "datareader",
+    "il2cpp",
+    "gamemanagers",
+}
+
+
 
 # Glob patterns for executable filenames to skip
 SKIP_EXE_PATTERNS: set[str] = {
@@ -196,13 +285,19 @@ SKIP_CANDIDATE_APP_NAMES = {
 
 SKIP_PATH_KEYWORDS = {
     "artbook",
+    "advguide",
+    "audiobook",
+    "audiobooktransfer",
+    "custom_music",
     "easyanticheat",
     "emu",
     "emulator",
+    "essentia",
     "goldberg",
     "md5",
     "nodvd",
     "plugin",
+    "qbit",
     "redist",
     "soundtrack",
     "streamingassets",
@@ -220,6 +315,15 @@ GENERIC_CONTAINER_DIRS = {
     "linux",
     "linux64",
     "linux32",
+    "win64",
+    "win32",
+    "win_x64",
+    "win_x86",
+    "windows",
+    "macos",
+    "osx",
+    "data",
+    "content",
 }
 
 GAME_HINT_FILES = {
@@ -233,16 +337,17 @@ GAME_HINT_FILES = {
     "data.pck",    # Godot games
 }
 
+GAME_HINT_FILES_LOWER = {h.lower() for h in GAME_HINT_FILES}
+
 GAME_HINT_PREFIXES = (
     "ue4-",
     "ue5-",
 )
 
-MAX_SCAN_DEPTH = 3
-MAX_EXECUTABLE_SCAN_DEPTH = 3
+MAX_SCAN_DEPTH = 4
+MAX_EXECUTABLE_SCAN_DEPTH = 5
 
 API_KEY_ENV_NAMES = ("STEAMGRIDDB_API_KEY",)
-ENV_FILE_NAMES = (".env",)
 
 ARTWORK_REQUEST_DELAY_SECONDS = 0.5
 ARTWORK_MAX_RETRIES = 3

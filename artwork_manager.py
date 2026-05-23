@@ -55,7 +55,11 @@ def resolve_api_key(prompt_if_missing: bool = True) -> str | None:
         return None
 
     import getpass
-    response = getpass.getpass("Enter your SteamGridDB API key: ").strip()
+    try:
+        response = getpass.getpass("Enter your SteamGridDB API key: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return None
     return response or None
 
 
